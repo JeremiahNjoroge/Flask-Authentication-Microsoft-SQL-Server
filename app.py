@@ -1,65 +1,57 @@
 from flask import Flask, render_template, flash, redirect, url_for, session, request, logging
-#from data import Articles
-from flask_mysqldb import MySQL
+from data import Articles
 from wtforms import Form, StringField, TextAreaField, PasswordField, validators
-from passlib.hash import sha256_crypt
+from passlib.hash import sha256_crypt # encrypting passswords
 from functools import wraps
+import pyodbc #create sql coonection
 
 app = Flask(__name__)
 
-# Config MySQL
-app.config['MYSQL_HOST'] = 'localhost'
-app.config['MYSQL_USER'] = 'root'
-app.config['MYSQL_PASSWORD'] = '123456'
-app.config['MYSQL_DB'] = 'myflaskapp'
-app.config['MYSQL_CURSORCLASS'] = 'DictCursor'
-# init MYSQL
-mysql = MySQL(app)
-
-#Articles = Articles()
+# Create  SQL connection string
+conn = pyodbc.connect('DRIVER={ODBC Driver 17 for SQL Server};SERVER=GRIT\SQLEXPRESS;DATABASE=myflaskapp;UID=sa;PWD=root1234')
 
 # Index
 @app.route('/')
 def index():
     return render_template('home.html')
 
-
 # About
 @app.route('/about')
 def about():
     return render_template('about.html')
 
-
 # Articles
 @app.route('/articles')
 def articles():
     # Create cursor
-    cur = mysql.connection.cursor()
+    
+    cursor = conn.cursor()
 
     # Get articles
-    result = cur.execute("SELECT * FROM articles")
+    cursor.execute("SELECT * FROM articles")
+    articles = cursor.fetchall()
 
-    articles = cur.fetchall()
-
-    if result > 0:
+    if len(articles) > 0:
         return render_template('articles.html', articles=articles)
     else:
         msg = 'No Articles Found'
+            # Close connection
+        cursor.close()
         return render_template('articles.html', msg=msg)
-    # Close connection
-    cur.close()
+
 
 
 #Single Article
 @app.route('/article/<string:id>/')
 def article(id):
     # Create cursor
-    cur = mysql.connection.cursor()
+    
+    cursor = conn.cursor()
 
     # Get article
-    result = cur.execute("SELECT * FROM articles WHERE id = %s", [id])
+    cursor.execute("SELECT * FROM articles WHERE id = ?", [id])
 
-    article = cur.fetchone()
+    article = cursor.fetchone()
 
     return render_template('article.html', article=article)
 
@@ -87,16 +79,16 @@ def register():
         password = sha256_crypt.encrypt(str(form.password.data))
 
         # Create cursor
-        cur = mysql.connection.cursor()
+        cursor = conn.cursor()
 
         # Execute query
-        cur.execute("INSERT INTO users(name, email, username, password) VALUES(%s, %s, %s, %s)", (name, email, username, password))
+        cursor.execute("INSERT INTO users(name, email, username, password) VALUES(?, ?, ?, ?)", (name, email, username, password))
 
         # Commit to DB
-        mysql.connection.commit()
+        conn.commit()
 
         # Close connection
-        cur.close()
+        cursor.close()
 
         flash('You are now registered and can log in', 'success')
 
@@ -108,36 +100,39 @@ def register():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
+
         # Get Form Fields
         username = request.form['username']
         password_candidate = request.form['password']
-
+        
         # Create cursor
-        cur = mysql.connection.cursor()
+        cursor = conn.cursor()
 
         # Get user by username
-        result = cur.execute("SELECT * FROM users WHERE username = %s", [username])
+        cursor.execute("SELECT * FROM users WHERE username = ?", [username])
 
-        if result > 0:
-            # Get stored hash
-            data = cur.fetchone()
-            password = data['password']
+        user = cursor.fetchone()
 
-            # Compare Passwords
-            if sha256_crypt.verify(password_candidate, password):
+        if user:
+            # Get stored hash and user data
+            stored_password = user.password
+
+            # Compare passwords
+            if sha256_crypt.verify(password_candidate, stored_password):
                 # Passed
                 session['logged_in'] = True
                 session['username'] = username
 
                 flash('You are now logged in', 'success')
+                cursor.close()
                 return redirect(url_for('dashboard'))
             else:
                 error = 'Invalid login'
+                cursor.close()
                 return render_template('login.html', error=error)
-            # Close connection
-            cur.close()
         else:
             error = 'Username not found'
+            cursor.close()
             return render_template('login.html', error=error)
 
     return render_template('login.html')
@@ -166,22 +161,21 @@ def logout():
 @is_logged_in
 def dashboard():
     # Create cursor
-    cur = mysql.connection.cursor()
+    cursor = conn.cursor()
 
-    # Get articles
-    #result = cur.execute("SELECT * FROM articles")
-    # Show articles only from the user logged in 
-    result = cur.execute("SELECT * FROM articles WHERE author = %s", [session['username']])
+    # Get articles 
+    cursor.execute("SELECT * FROM articles WHERE author = ?", [session['username']])
 
-    articles = cur.fetchall()
+    articles = cursor.fetchall()
 
-    if result > 0:
+    if len(articles) > 0:
         return render_template('dashboard.html', articles=articles)
     else:
         msg = 'No Articles Found'
+           # Close connection
+        cursor.close()
         return render_template('dashboard.html', msg=msg)
-    # Close connection
-    cur.close()
+ 
 
 # Article Form Class
 class ArticleForm(Form):
@@ -198,16 +192,16 @@ def add_article():
         body = form.body.data
 
         # Create Cursor
-        cur = mysql.connection.cursor()
+        cursor = conn.cursor()
 
         # Execute
-        cur.execute("INSERT INTO articles(title, body, author) VALUES(%s, %s, %s)",(title, body, session['username']))
+        cursor.execute("INSERT INTO articles(title, body, author) VALUES(?, ?, ?)",(title, body, session['username']))
 
         # Commit to DB
-        mysql.connection.commit()
+        conn.commit()
 
         #Close connection
-        cur.close()
+        cursor.close()
 
         flash('Article Created', 'success')
 
@@ -221,34 +215,34 @@ def add_article():
 @is_logged_in
 def edit_article(id):
     # Create cursor
-    cur = mysql.connection.cursor()
+    cursor= conn.cursor()
 
     # Get article by id
-    result = cur.execute("SELECT * FROM articles WHERE id = %s", [id])
+    cursor.execute("SELECT * FROM articles WHERE id = ?", [id])
 
-    article = cur.fetchone()
-    cur.close()
+    article = cursor.fetchone()
+    cursor.close()
     # Get form
     form = ArticleForm(request.form)
 
     # Populate article form fields
-    form.title.data = article['title']
-    form.body.data = article['body']
+    form.title.data = article[1]
+    form.body.data = article[3]
 
     if request.method == 'POST' and form.validate():
-        title = request.form['title']
-        body = request.form['body']
+        title = request.form[1]
+        body = request.form[3]
 
         # Create Cursor
-        cur = mysql.connection.cursor()
+        cursor = conn.cursor()
         app.logger.info(title)
         # Execute
-        cur.execute ("UPDATE articles SET title=%s, body=%s WHERE id=%s",(title, body, id))
+        cursor.execute ("UPDATE articles SET title=?, body=? WHERE id=?",(title, body, id))
         # Commit to DB
-        mysql.connection.commit()
+        conn.commit()
 
         #Close connection
-        cur.close()
+        cursor.close()
 
         flash('Article Updated', 'success')
 
@@ -261,16 +255,16 @@ def edit_article(id):
 @is_logged_in
 def delete_article(id):
     # Create cursor
-    cur = mysql.connection.cursor()
+    cursor = conn.cursor()
 
     # Execute
-    cur.execute("DELETE FROM articles WHERE id = %s", [id])
+    cursor.execute("DELETE FROM articles WHERE id = ?", [id])
 
     # Commit to DB
-    mysql.connection.commit()
+    cursor.commit()
 
     #Close connection
-    cur.close()
+    cursor.close()
 
     flash('Article Deleted', 'success')
 
@@ -278,4 +272,4 @@ def delete_article(id):
 
 if __name__ == '__main__':
     app.secret_key='secret123'
-    app.run(debug=True)
+    app.run(debug=True,port='3000')
